@@ -1,0 +1,111 @@
+services:
+  db:
+    image: mariadb:10.11
+    restart: unless-stopped
+    environment:
+      MARIADB_DATABASE: ${MARIADB_DATABASE:-taxicap_actual}
+      MARIADB_USER: ${MARIADB_USER:-taxicap_app}
+      MARIADB_PASSWORD: ${MARIADB_PASSWORD:?Set MARIADB_PASSWORD in .env}
+      MARIADB_ROOT_PASSWORD: ${MARIADB_ROOT_PASSWORD:?Set MARIADB_ROOT_PASSWORD in .env}
+    ports:
+      - "127.0.0.1:${MARIADB_PORT:-3307}:3306"
+    volumes:
+      - mariadb_data:/var/lib/mysql
+      - ./nextjs/database/taxicap_actual.sql:/docker-entrypoint-initdb.d/10-taxicap_actual.sql:ro
+    healthcheck:
+      test: ["CMD", "healthcheck.sh", "--connect", "--innodb_initialized"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 30s
+
+  redis:
+    image: redis:7-alpine
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+
+  api:
+    build:
+      context: ./server
+      dockerfile: Dockerfile
+    restart: unless-stopped
+    env_file:
+      - .env
+    environment:
+      SPRING_PROFILES_ACTIVE: docker
+      DB_HOST: db
+      DB_NAME: ${MARIADB_DATABASE:-taxicap_actual}
+      DB_USER: ${MARIADB_USER:-taxicap_app}
+      DB_PASSWORD: ${MARIADB_PASSWORD:?Set MARIADB_PASSWORD in .env}
+      REDIS_URL: redis
+      REDIS_PORT: 6379
+      JWT_SECRET_KEY: ${JWT_SECRET_KEY:?Set JWT_SECRET_KEY in .env}
+      PUSH_INTERNAL_SECRET: ${PUSH_INTERNAL_SECRET:?Set PUSH_INTERNAL_SECRET in .env}
+      PUSH_NOTIFY_URL: http://web:3000/api/push/notify
+      TILE_SERVER_URL: ${TILE_SERVER_URL:-http://host.docker.internal:8001}
+      NOMINATIM_SERVER_URL: ${NOMINATIM_SERVER_URL:-http://host.docker.internal:8003}
+      VALHALLA_SERVER_URL: ${VALHALLA_SERVER_URL:-http://host.docker.internal:8002}
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    ports:
+      - "${API_PORT:-8080}:8080"
+    depends_on:
+      db:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+
+  web:
+    build:
+      context: ./nextjs
+      dockerfile: Dockerfile
+      args:
+        API_SERVER_URL: http://api:8080
+        NEXT_PUBLIC_LAT_UP: ${NEXT_PUBLIC_LAT_UP:-}
+        NEXT_PUBLIC_LON_UP: ${NEXT_PUBLIC_LON_UP:-}
+        NEXT_PUBLIC_LAT_BOTTOM: ${NEXT_PUBLIC_LAT_BOTTOM:-}
+        NEXT_PUBLIC_LON_BOTTOM: ${NEXT_PUBLIC_LON_BOTTOM:-}
+        NEXT_PUBLIC_MAP_API_KEY: ${NEXT_PUBLIC_MAP_API_KEY:-}
+        NEXT_PUBLIC_MYSQL_API: ${NEXT_PUBLIC_MYSQL_API:-}
+        NEXT_PUBLIC_VAPID_PUBLIC_KEY: ${NEXT_PUBLIC_VAPID_PUBLIC_KEY:-}
+    restart: unless-stopped
+    env_file:
+      - .env
+    environment:
+      API_SERVER_URL: http://api:8080
+      DB_HOST: db
+      DB_NAME: ${MARIADB_DATABASE:-taxicap_actual}
+      DB_USER: ${MARIADB_USER:-taxicap_app}
+      DB_PASSWORD: ${MARIADB_PASSWORD:?Set MARIADB_PASSWORD in .env}
+      REDIS_URL: redis
+      REDIS_PORT: 6379
+      HOSTNAME: 0.0.0.0
+      PORT: 3000
+      PUSH_INTERNAL_SECRET: ${PUSH_INTERNAL_SECRET:?Set PUSH_INTERNAL_SECRET in .env}
+    ports:
+      - "${WEB_PORT:-3000}:3000"
+    volumes:
+      - user_uploads:/app/public/users
+    depends_on:
+      - api
+
+  phpmyadmin:
+    image: phpmyadmin:5-apache
+    restart: unless-stopped
+    environment:
+      PMA_HOST: db
+      PMA_PORT: 3306
+      UPLOAD_LIMIT: 64M
+    ports:
+      - "127.0.0.1:${PHPMYADMIN_PORT:-8081}:80"
+    depends_on:
+      db:
+        condition: service_healthy
+
+volumes:
+  mariadb_data:
+  user_uploads:
